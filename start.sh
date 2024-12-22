@@ -1,114 +1,148 @@
 #!/bin/bash
 
-# Define paths and constants
+# Constants
 DISK_IMG="boot.img"
 EFI_DIR="efi/boot"
-DISK_SIZE_MB=512      # Total disk size in MiB
-PART_START=1          # Start of EFI partition (in MiB)
-PART_END=500          # End of EFI partition (leaving some space for GPT metadata)
+DISK_SIZE_MB=512
+PARTITION_START="1MiB"
+PARTITION_END="100%"
 
-# Clean up previous build files
-rm -f "$DISK_IMG" log.txt bootloader.efi
-rm -rf "$EFI_DIR"
+# Cleanup
+cleanup() {
+    echo "Cleaning up previous build files..."
+    rm -f kernel.bin kernel.elf kernel.o qemu.log debug.log 
+    rm -rf "$EFI_DIR"
+}
+cleanup
 
-# Create necessary directories
+# Prepare directories
 mkdir -p "$EFI_DIR"
 
-# Assemble the bootloader
-echo "Assembling the bootloader..."
-nasm -f win64 bootloader.asm -o bootloader.obj
+# Assemble bootloader
+echo "Assembling bootloader..."
+nasm -f elf64 bootloader.asm -o bootloader.obj
 if [ $? -ne 0 ]; then
-    echo "Error: Failed to assemble bootloader."
+    echo "Error: Failed to assemble bootloader"
     exit 1
 fi
 
-echo "Linking the bootloader to create EFI executable..."
-ld -o bootloader.efi bootloader.obj --oformat pei-x86-64
+# Link bootloader
+echo "Linking bootloader..."
+ld \
+    -nostdlib \
+    -T /usr/lib/elf_x86_64_efi.lds \
+    -shared \
+    -Bsymbolic \
+    -L/usr/lib/x86_64-linux-gnu \
+    -l:crt0-efi-x86_64.o \
+    -l:libefi.a \
+    -l:libgnuefi.a \
+    -o BOOTX64.EFI
+
 if [ $? -ne 0 ]; then
-    echo "Error: Failed to link bootloader."
+    echo "Error: Failed to link bootloader"
     exit 1
 fi
 
-# Assemble the kernel
-echo "Assembling the kernel..."
-nasm -f bin kernel.asm -o kernel.bin
+# Compile the kernel
+echo "Compiling the C kernel..."
+gcc -ffreestanding -fPIC -c kernel.c -o kernel.o
 if [ $? -ne 0 ]; then
-    echo "Error: Failed to assemble kernel."
+    echo "Error: Failed to compile kernel"
     exit 1
 fi
 
-# Create a blank disk image
-echo "Creating the disk image..."
-dd if=/dev/zero of="$DISK_IMG" bs=1M count=$DISK_SIZE_MB
+# Link the kernel
+echo "Linking the kernel..."
+ld -Ttext=0x100000 --oformat=elf64-x86-64 -nostdlib -o kernel.elf kernel.o
 if [ $? -ne 0 ]; then
-    echo "Error: Failed to create disk image."
+    echo "Error: Failed to link kernel"
     exit 1
 fi
 
-# Create GPT partition table
+# Convert kernel to binary
+echo "Converting the kernel to binary format..."
+objcopy -O binary kernel.elf kernel.bin
+if [ $? -ne 0 ]; then
+    echo "Error: Failed to convert kernel to binary"
+    exit 1
+fi
+
+# Create the disk image
+echo "Creating disk image..."
+dd if=/dev/zero of="$DISK_IMG" bs=1M count=$DISK_SIZE_MB status=progress
+if [ $? -ne 0 ]; then
+    echo "Error: Failed to create disk image"
+    exit 1
+fi
+
+# Create partition table
 echo "Setting up GPT partition table..."
-parted "$DISK_IMG" --script mklabel gpt
+parted -s "$DISK_IMG" mklabel gpt
 if [ $? -ne 0 ]; then
-    echo "Error: Failed to create GPT label."
+    echo "Error: Failed to create GPT label"
     exit 1
 fi
 
-# Create EFI System Partition (ESP)
 echo "Creating EFI System Partition..."
-parted "$DISK_IMG" --script mkpart ESP fat32 ${PART_START}MiB ${PART_END}MiB
+parted -s "$DISK_IMG" mkpart primary fat32 $PARTITION_START $PARTITION_END
 if [ $? -ne 0 ]; then
-    echo "Error: Failed to create partition."
+    echo "Error: Failed to create partition"
     exit 1
 fi
 
-# Set the ESP and BOOT flags
-parted "$DISK_IMG" --script set 1 esp on
+# Set flags
+parted -s "$DISK_IMG" set 1 boot on
+parted -s "$DISK_IMG" set 1 esp on
 if [ $? -ne 0 ]; then
-    echo "Error: Failed to set ESP flag."
+    echo "Error: Failed to set partition flags"
     exit 1
 fi
 
-parted "$DISK_IMG" --script set 1 boot on
+# Loop device setup
+echo "Setting up loop device..."
+LOOP_DEV=$(sudo losetup -f --show -P "$DISK_IMG")
 if [ $? -ne 0 ]; then
-    echo "Error: Failed to set BOOT flag."
+    echo "Error: Failed to setup loop device"
     exit 1
 fi
 
-# Setup loopback device
-echo "Setting up loopback device..."
-LOOP_DEV=$(losetup -f)
-sudo losetup -P "$LOOP_DEV" "$DISK_IMG"
-
-# Format the EFI partition as FAT32
-echo "Formatting the EFI partition as FAT32..."
+# Format the partition
+echo "Formatting EFI System Partition as FAT32..."
 sudo mkfs.fat -F 32 "${LOOP_DEV}p1"
 if [ $? -ne 0 ]; then
-    echo "Error: Failed to format EFI partition."
+    echo "Error: Failed to format partition"
     sudo losetup -d "$LOOP_DEV"
     exit 1
 fi
 
-# Mount the EFI partition
+# Mount and copy files
 MOUNT_POINT=$(mktemp -d)
 sudo mount "${LOOP_DEV}p1" "$MOUNT_POINT"
 
-# Copy bootloader and kernel to EFI directory
-echo "Copying files to EFI partition..."
+echo "Copying bootloader and kernel to EFI partition..."
 sudo mkdir -p "$MOUNT_POINT/EFI/BOOT"
-sudo cp bootloader.efi "$MOUNT_POINT/EFI/BOOT/BOOTX64.EFI"
+sudo cp BOOTX64.EFI "$MOUNT_POINT/EFI/BOOT/"
 sudo cp kernel.bin "$MOUNT_POINT/EFI/BOOT/"
 
 # Cleanup
-echo "Cleaning up..."
 sync
 sudo umount "$MOUNT_POINT"
 rmdir "$MOUNT_POINT"
 sudo losetup -d "$LOOP_DEV"
 
-# Run the disk image in QEMU
-echo "Running the UEFI bootloader in QEMU..."
+# Run the disk image
+echo "Starting QEMU..."
 qemu-system-x86_64 \
-    -drive file="$DISK_IMG",format=raw \
     -bios /usr/share/OVMF/OVMF_CODE.fd \
+    -drive file="$DISK_IMG",format=raw,media=disk \
+    -net none \
     -m 512M \
-    -serial file:log.txt
+    -machine q35 \
+    -monitor stdio \
+    -serial file:serial.log \
+    -debugcon file:debug.log \
+    -display gtk
+
+echo "Done!"
+cleanup
