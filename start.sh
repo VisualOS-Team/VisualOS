@@ -3,9 +3,9 @@
 # Define paths and constants
 DISK_IMG="boot.img"
 EFI_DIR="efi/boot"
-DISK_SIZE_MB=256      # Total disk size in MiB
+DISK_SIZE_MB=512      # Total disk size in MiB
 PART_START=1          # Start of EFI partition (in MiB)
-PART_END=200          # End of EFI partition (in MiB)
+PART_END=500          # End of EFI partition (leaving some space for GPT metadata)
 
 # Clean up previous build files
 rm -f "$DISK_IMG" log.txt bootloader.efi
@@ -55,16 +55,22 @@ fi
 
 # Create EFI System Partition (ESP)
 echo "Creating EFI System Partition..."
-parted "$DISK_IMG" --script mkpart primary fat32 ${PART_START}MiB ${PART_END}MiB
+parted "$DISK_IMG" --script mkpart ESP fat32 ${PART_START}MiB ${PART_END}MiB
 if [ $? -ne 0 ]; then
     echo "Error: Failed to create partition."
     exit 1
 fi
 
-# Set the ESP flag
+# Set the ESP and BOOT flags
 parted "$DISK_IMG" --script set 1 esp on
 if [ $? -ne 0 ]; then
     echo "Error: Failed to set ESP flag."
+    exit 1
+fi
+
+parted "$DISK_IMG" --script set 1 boot on
+if [ $? -ne 0 ]; then
+    echo "Error: Failed to set BOOT flag."
     exit 1
 fi
 
