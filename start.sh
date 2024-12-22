@@ -1,12 +1,11 @@
 #!/bin/bash
 
-# Constants
 DISK_IMG="boot.img"
 EFI_DIR="efi/boot"
 DISK_SIZE_MB=64
 PARTITION_START="1MiB"
 PARTITION_END="100%"
-GNUEFI_PATH="/home/drap/caly-talk/gnu-efi/x86_64"
+GNUEFI_PATH="/home/dalm1/gnu-efi/x86_64"
 EFI_LDS="$GNUEFI_PATH/gnuefi/elf_x86_64_efi.lds"
 EFI_CRT_OBJ="$GNUEFI_PATH/gnuefi/crt0-efi-x86_64.o"
 
