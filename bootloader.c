@@ -4,6 +4,8 @@
 #define KERNEL_BASE_ADDRESS 0x100000 // 1MB for the kernel
 #define RESERVED_MEMORY (128 * 1024 * 1024) // 128MB reserved
 
+typedef void (*KernelMain)();
+
 EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     EFI_STATUS Status;
     EFI_PHYSICAL_ADDRESS KernelAddress = KERNEL_BASE_ADDRESS;
@@ -16,7 +18,6 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     UINT64 AllocatedMemory = 0;
     EFI_FILE_PROTOCOL *KernelFile;
     UINTN FileSize = 0;
-    UINTN BufferSize;
     VOID *Buffer;
 
     InitializeLib(ImageHandle, SystemTable);
@@ -142,9 +143,8 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     }
 
     // Read the kernel into memory
-    BufferSize = FileSize;
     Buffer = (VOID *)KernelAddress;
-    Status = uefi_call_wrapper(KernelFile->Read, 3, KernelFile, &BufferSize, Buffer);
+    Status = uefi_call_wrapper(KernelFile->Read, 3, KernelFile, &FileSize, Buffer);
     if (EFI_ERROR(Status)) {
         Print(L"Failed to read kernel into memory: %r\n", Status);
         return Status;
@@ -152,9 +152,10 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
 
     Print(L"Kernel loaded at address: 0x%lx\n", KernelAddress);
 
-    // Jump to the kernel entry point
-    void (*KernelEntry)() = (void (*)())KernelAddress;
-    KernelEntry();
+    // Jump to the kernel's main function
+    Print(L"Jumping to kernel main...\n");
+    KernelMain main = (KernelMain)KernelAddress;
+    main();
 
     // Should never return
     return EFI_SUCCESS;

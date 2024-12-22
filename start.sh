@@ -9,11 +9,12 @@ PARTITION_END="100%"
 GNUEFI_PATH="/home/drap/caly-talk/gnu-efi/x86_64"
 EFI_LDS="$GNUEFI_PATH/gnuefi/elf_x86_64_efi.lds"
 EFI_CRT_OBJ="$GNUEFI_PATH/gnuefi/crt0-efi-x86_64.o"
+KERNEL_DIR="kernel"
 
 # Cleanup function
 cleanup() {
     echo "Cleaning up previous build files..."
-    rm -f bootloader.o BOOTX64.so BOOTX64.efi qemu.log serial.log debug.log boot.img
+    rm -f bootloader.o BOOTX64.so BOOTX64.efi qemu.log serial.log debug.log boot.img kernel.bin
     rm -rf "$EFI_DIR"
 }
 
@@ -61,9 +62,43 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-echo "Build Kernel..."
-gcc -ffreestanding -c kernel.c -o kernel.o
-ld -Ttext 0x100000 --oformat binary -nostdlib kernel.o -o kernel.bin
+# Compile all kernel source files
+echo "Building kernel..."
+KERNEL_OBJECTS=""
+
+# Compile main.c first
+if [ -f "$KERNEL_DIR/main.c" ]; then
+    gcc -ffreestanding -c "$KERNEL_DIR/main.c" -o main.o
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to compile main.c"
+        exit 1
+    fi
+    KERNEL_OBJECTS="main.o"
+else
+    echo "Error: main.c not found in $KERNEL_DIR"
+    exit 1
+fi
+
+# Compile the rest of the kernel files
+for file in "$KERNEL_DIR"/*.c; do
+    if [[ "$file" == "$KERNEL_DIR/main.c" ]]; then
+        continue
+    fi
+    obj=$(basename "$file" .c).o
+    gcc -ffreestanding -c "$file" -o "$obj"
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to compile $file"
+        exit 1
+    fi
+    KERNEL_OBJECTS="$KERNEL_OBJECTS $obj"
+done
+
+# Link kernel object files into a single binary
+ld -Ttext 0x100000 --oformat binary -nostdlib $KERNEL_OBJECTS -o kernel.bin
+if [ $? -ne 0 ]; then
+    echo "Error: Failed to link kernel"
+    exit 1
+fi
 
 # Create the disk image
 echo "Creating the disk image..."
@@ -103,7 +138,7 @@ fi
 MOUNT_POINT=$(mktemp -d)
 sudo mount "${LOOP_DEV}p1" "$MOUNT_POINT"
 
-echo "Copying UEFI bootloader to EFI partition..."
+echo "Copying UEFI bootloader and kernel to EFI partition..."
 sudo mkdir -p "$MOUNT_POINT/EFI/BOOT"
 sudo cp BOOTX64.efi "$MOUNT_POINT/EFI/BOOT/"
 sudo cp kernel.bin "$MOUNT_POINT/EFI/BOOT/"
