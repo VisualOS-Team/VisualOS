@@ -1,13 +1,20 @@
 #!/bin/bash
 
+# Check if GNUEFI_PATH is provided as an argument
+if [ -z "$1" ]; then
+    echo "Usage: ./start.sh <GNUEFI_PATH>"
+    exit 1
+fi
+
+GNUEFI_PATH="$1"
+
 # Constants
 BUILD_DIR="build"
 DISK_IMG="$BUILD_DIR/boot.img"
-EFI_DIR="$BUILD_DIR/efi/boot"
 DISK_SIZE_MB=64
-PARTITION_START="1MiB"
-PARTITION_END="100%"
-GNUEFI_PATH="/home/drap/caly-talk/gnu-efi/x86_64"
+SECTORS_PER_TRACK=32
+HEADS=64
+CYLINDERS=$((DISK_SIZE_MB * 1024 * 1024 / (SECTORS_PER_TRACK * HEADS * 512)))
 EFI_LDS="$GNUEFI_PATH/gnuefi/elf_x86_64_efi.lds"
 EFI_CRT_OBJ="$GNUEFI_PATH/gnuefi/crt0-efi-x86_64.o"
 KERNEL_DIR="kernel"
@@ -21,7 +28,7 @@ cleanup() {
 cleanup
 
 # Create build directory
-mkdir -p "$EFI_DIR"
+mkdir -p "$BUILD_DIR"
 
 # Compile the UEFI bootloader
 echo "Compiling the UEFI bootloader..."
@@ -109,45 +116,26 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# Create partition table
-echo "Setting up GPT partition table..."
-parted -s "$DISK_IMG" mklabel gpt
-parted -s "$DISK_IMG" mkpart primary fat32 $PARTITION_START $PARTITION_END
-parted -s "$DISK_IMG" set 1 boot on
-parted -s "$DISK_IMG" set 1 esp on
+# Format the disk image as FAT32 using mtools
+echo "Formatting disk image with FAT32 file system..."
+mformat -i "$DISK_IMG" -h "$HEADS" -t "$CYLINDERS" -s "$SECTORS_PER_TRACK" ::
 
-# Setup loop device
-echo "Setting up loop device..."
-LOOP_DEV=$(sudo losetup -f --show -P "$DISK_IMG")
 if [ $? -ne 0 ]; then
-    echo "Error: Failed to setup loop device"
+    echo "Error: Failed to format disk image with FAT32"
     exit 1
 fi
 
-# Format the partition
-echo "Formatting the EFI System Partition as FAT32..."
-sudo mkfs.fat -F 32 "${LOOP_DEV}p1"
+# Add boot files to the disk image
+echo "Adding bootloader and kernel to disk image..."
+mmd -i "$DISK_IMG" ::/EFI
+mmd -i "$DISK_IMG" ::/EFI/BOOT
+mcopy -i "$DISK_IMG" "$BUILD_DIR/BOOTX64.efi" ::/EFI/BOOT/
+mcopy -i "$DISK_IMG" "$BUILD_DIR/kernel.bin" ::/EFI/BOOT/
 
 if [ $? -ne 0 ]; then
-    echo "Error: Failed to format partition"
-    sudo losetup -d "$LOOP_DEV"
+    echo "Error: Failed to copy files to disk image"
     exit 1
 fi
-
-# Mount and copy files
-MOUNT_POINT=$(mktemp -d)
-sudo mount "${LOOP_DEV}p1" "$MOUNT_POINT"
-
-echo "Copying UEFI bootloader and kernel to EFI partition..."
-sudo mkdir -p "$MOUNT_POINT/EFI/BOOT"
-sudo cp "$BUILD_DIR/BOOTX64.efi" "$MOUNT_POINT/EFI/BOOT/"
-sudo cp "$BUILD_DIR/kernel.bin" "$MOUNT_POINT/EFI/BOOT/"
-
-# Cleanup mount and loop device
-sync
-sudo umount "$MOUNT_POINT"
-rmdir "$MOUNT_POINT"
-sudo losetup -d "$LOOP_DEV"
 
 # Run the disk image
 echo "Starting QEMU..."
@@ -163,3 +151,5 @@ qemu-system-x86_64 \
     -display gtk
 
 echo "Done!"
+
+cleanup

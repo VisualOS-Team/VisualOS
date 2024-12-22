@@ -1,0 +1,24 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Launch OS (Windows)",
+            "request": "launch",
+            "type": "node-terminal",
+            "command": "wsl ./start.sh /home/drap/caly-talk/gnu-efi/x86_64",
+            "cwd": "${workspaceFolder}",
+            "internalConsoleOptions": "neverOpen",
+            "windows": true
+        },
+        {
+            "name": "Launch OS (Unix)",
+            "request": "launch",
+            "type": "node-terminal",
+            "command": "./start.sh",
+            "cwd": "${workspaceFolder}",
+            "internalConsoleOptions": "neverOpen",
+            "linux": true,
+            "osx": true
+        }
+    ]
+}
