@@ -1,8 +1,22 @@
-ENTRY(kernel_main)
+SECTIONS
+{
+    /* Load the kernel at 0x100000 */
+    . = 0x100000;
 
-SECTIONS {
-    . = 0x1000;
-    .text : { *(.text) }
-    .data : { *(.data) }
-    .bss : { *(.bss) }
+    .text : {
+        *(.text)
+    }
+
+    .rodata : {
+        *(.rodata)
+    }
+
+    .data : {
+        *(.data)
+    }
+
+    .bss : {
+        *(COMMON)
+        *(.bss)
+    }
 }

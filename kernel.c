@@ -1,14 +1,15 @@
-#include <stddef.h>
-
 void kernel_main() {
-    volatile char *video_memory = (char *)0xb8000; // Adresse de la mémoire vidéo
-    const char *message = "Hello, Kernel!";
-    const char COLOR = 0x07;  // Blanc sur noir
-
+    char *vga = (char *)0xB8000;  // VGA text buffer address
+    const char *message = "Hello from the 64-bit kernel!";
+    
+    // Write message to VGA text buffer
     for (int i = 0; message[i] != '\0'; i++) {
-        video_memory[i * 2] = message[i];       // Caractère
-        video_memory[i * 2 + 1] = COLOR;       // Couleur
+        vga[i * 2] = message[i];        // Character
+        vga[i * 2 + 1] = 0x0F;         // Attribute: white text on black background
     }
 
-    while (1);  // Boucle infinie pour garder le kernel actif
+    // Halt the CPU
+    while (1) {
+        __asm__("hlt");
+    }
 }

@@ -5,8 +5,7 @@ del kernel.o
 
 wsl nasm -f bin boot.asm -o boot.bin
 
-wsl gcc -m32 -ffreestanding -c kernel.c -o kernel.o
-wsl ld -m elf_i386 -T linker.ld -o kernel.bin kernel.o
+wsl nasm -f bin kernel.asm -o kernel.bin
 
 dd if=/dev/zero of=boot.img bs=512 count=2880
 dd if=boot.bin of=boot.img bs=512 count=1 conv=notrunc
