@@ -1,0 +1,1 @@
+wsl sudo apt install qemu-kvm nasm gcc-multilib binutils
