@@ -61,6 +61,10 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
+echo "Build Kernel..."
+gcc -ffreestanding -c kernel.c -o kernel.o
+ld -Ttext 0x100000 --oformat binary -nostdlib kernel.o -o kernel.bin
+
 # Create the disk image
 echo "Creating the disk image..."
 dd if=/dev/zero of="$DISK_IMG" bs=1M count=$DISK_SIZE_MB status=progress
@@ -102,6 +106,7 @@ sudo mount "${LOOP_DEV}p1" "$MOUNT_POINT"
 echo "Copying UEFI bootloader to EFI partition..."
 sudo mkdir -p "$MOUNT_POINT/EFI/BOOT"
 sudo cp BOOTX64.efi "$MOUNT_POINT/EFI/BOOT/"
+sudo cp kernel.bin "$MOUNT_POINT/EFI/BOOT/"
 
 # Cleanup mount and loop device
 sync
@@ -115,7 +120,7 @@ qemu-system-x86_64 \
     -bios /usr/share/OVMF/OVMF_CODE.fd \
     -drive file="$DISK_IMG",format=raw,media=disk \
     -net none \
-    -m 512M \
+    -m 4096M \
     -machine q35 \
     -monitor stdio \
     -serial file:serial.log \
