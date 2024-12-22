@@ -1,4 +1,6 @@
 efi
 boot.img
 log.txt
-kernel.bin
+*.bin
+*.efi
+*.obj
