@@ -1,9 +1,1 @@
-efi
-boot.img
-log.txt
-*.bin
-*.efi
-*.obj
-*.o
-*.so
-*.log
+build

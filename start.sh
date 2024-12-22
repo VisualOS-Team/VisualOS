@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Constants
-DISK_IMG="boot.img"
-EFI_DIR="efi/boot"
+BUILD_DIR="build"
+DISK_IMG="$BUILD_DIR/boot.img"
+EFI_DIR="$BUILD_DIR/efi/boot"
 DISK_SIZE_MB=64
 PARTITION_START="1MiB"
 PARTITION_END="100%"
@@ -13,14 +14,13 @@ KERNEL_DIR="kernel"
 
 # Cleanup function
 cleanup() {
-    echo "Cleaning up previous build files..."
-    rm -f bootloader.o BOOTX64.so BOOTX64.efi qemu.log serial.log debug.log boot.img kernel.bin
-    rm -rf "$EFI_DIR"
+    echo "Cleaning up build files..."
+    rm -rf "$BUILD_DIR"
 }
 
 cleanup
 
-# Prepare directories
+# Create build directory
 mkdir -p "$EFI_DIR"
 
 # Compile the UEFI bootloader
@@ -31,7 +31,7 @@ gcc \
     -I/usr/include/efi \
     -fpic -ffreestanding -fno-stack-protector -fno-stack-check -fshort-wchar \
     -mno-red-zone -maccumulate-outgoing-args \
-    -c bootloader.c -o bootloader.o
+    -c bootloader.c -o "$BUILD_DIR/bootloader.o"
 
 if [ $? -ne 0 ]; then
     echo "Error: Failed to compile the UEFI bootloader"
@@ -43,7 +43,7 @@ echo "Linking the UEFI bootloader..."
 ld \
     -nostdlib -znocombreloc -T "$EFI_LDS" -shared -Bsymbolic \
     -L"$GNUEFI_PATH/gnuefi" -L"$GNUEFI_PATH/lib" \
-    "$EFI_CRT_OBJ" bootloader.o -o BOOTX64.so -lefi -lgnuefi
+    "$EFI_CRT_OBJ" "$BUILD_DIR/bootloader.o" -o "$BUILD_DIR/BOOTX64.so" -lefi -lgnuefi
 
 if [ $? -ne 0 ]; then
     echo "Error: Failed to link the UEFI bootloader"
@@ -55,7 +55,7 @@ echo "Converting the UEFI bootloader to EFI format..."
 objcopy \
     -j .text -j .sdata -j .data -j .rodata -j .dynamic -j .dynsym \
     -j .rel -j .rela -j .rel.* -j .rela.* -j .reloc \
-    --target=efi-app-x86_64 --subsystem=10 BOOTX64.so BOOTX64.efi
+    --target=efi-app-x86_64 --subsystem=10 "$BUILD_DIR/BOOTX64.so" "$BUILD_DIR/BOOTX64.efi"
 
 if [ $? -ne 0 ]; then
     echo "Error: Failed to convert the UEFI bootloader to EFI format"
@@ -68,12 +68,12 @@ KERNEL_OBJECTS=""
 
 # Compile main.c first
 if [ -f "$KERNEL_DIR/main.c" ]; then
-    gcc -ffreestanding -c "$KERNEL_DIR/main.c" -o main.o
+    gcc -ffreestanding -c "$KERNEL_DIR/main.c" -o "$BUILD_DIR/main.o"
     if [ $? -ne 0 ]; then
         echo "Error: Failed to compile main.c"
         exit 1
     fi
-    KERNEL_OBJECTS="main.o"
+    KERNEL_OBJECTS="$BUILD_DIR/main.o"
 else
     echo "Error: main.c not found in $KERNEL_DIR"
     exit 1
@@ -84,7 +84,7 @@ for file in "$KERNEL_DIR"/*.c; do
     if [[ "$file" == "$KERNEL_DIR/main.c" ]]; then
         continue
     fi
-    obj=$(basename "$file" .c).o
+    obj="$BUILD_DIR/$(basename "$file" .c).o"
     gcc -ffreestanding -c "$file" -o "$obj"
     if [ $? -ne 0 ]; then
         echo "Error: Failed to compile $file"
@@ -94,7 +94,7 @@ for file in "$KERNEL_DIR"/*.c; do
 done
 
 # Link kernel object files into a single binary
-ld -Ttext 0x100000 --oformat binary -nostdlib $KERNEL_OBJECTS -o kernel.bin
+ld -Ttext 0x100000 --oformat binary -nostdlib $KERNEL_OBJECTS -o "$BUILD_DIR/kernel.bin"
 if [ $? -ne 0 ]; then
     echo "Error: Failed to link kernel"
     exit 1
@@ -140,8 +140,8 @@ sudo mount "${LOOP_DEV}p1" "$MOUNT_POINT"
 
 echo "Copying UEFI bootloader and kernel to EFI partition..."
 sudo mkdir -p "$MOUNT_POINT/EFI/BOOT"
-sudo cp BOOTX64.efi "$MOUNT_POINT/EFI/BOOT/"
-sudo cp kernel.bin "$MOUNT_POINT/EFI/BOOT/"
+sudo cp "$BUILD_DIR/BOOTX64.efi" "$MOUNT_POINT/EFI/BOOT/"
+sudo cp "$BUILD_DIR/kernel.bin" "$MOUNT_POINT/EFI/BOOT/"
 
 # Cleanup mount and loop device
 sync
@@ -158,10 +158,8 @@ qemu-system-x86_64 \
     -m 4096M \
     -machine q35 \
     -monitor stdio \
-    -serial file:serial.log \
-    -debugcon file:debug.log \
+    -serial file:"$BUILD_DIR/serial.log" \
+    -debugcon file:"$BUILD_DIR/debug.log" \
     -display gtk
 
 echo "Done!"
-
-cleanup
