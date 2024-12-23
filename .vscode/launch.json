@@ -19,6 +19,25 @@
             "internalConsoleOptions": "neverOpen",
             "linux": true,
             "osx": true
+        },
+        {
+            "name": "Build OS (Windows)",
+            "request": "launch",
+            "type": "node-terminal",
+            "command": "wsl ./build.sh /home/drap/caly-talk/gnu-efi/x86_64",
+            "cwd": "${workspaceFolder}",
+            "internalConsoleOptions": "neverOpen",
+            "windows": true
+        },
+        {
+            "name": "Build OS (Unix)",
+            "request": "launch",
+            "type": "node-terminal",
+            "command": "./build.sh",
+            "cwd": "${workspaceFolder}",
+            "internalConsoleOptions": "neverOpen",
+            "linux": true,
+            "osx": true
         }
     ]
 }

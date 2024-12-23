@@ -64,24 +64,10 @@ void terminal_write(const char *str) {
 // Kernel main function
 void kernel_main() {
     terminal_initialize();
+    terminal_write("Kernel initialized successfully!\n");
     terminal_write("Hello, World!\n");
 
     while (1) {
         __asm__("hlt");
     }
-}
-
-// Entry point for the kernel
-void _start() {
-    // Ensure the stack is set up correctly
-    __asm__ volatile (
-        "mov $0x90000, %esp\n"  // Set stack pointer to a known good value
-        "xor %ebp, %ebp\n"      // Zero out the base pointer
-    );
-
-    // Call the kernel main function
-    kernel_main();
-
-    // This should not be reached
-    __asm__ volatile ("hlt");
 }

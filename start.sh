@@ -9,6 +9,8 @@ fi
 GNUEFI_PATH="$1"
 
 # Constants
+
+RAM_SIZE_MB=4096
 BUILD_DIR="build"
 DISK_IMG="$BUILD_DIR/boot.img"
 DISK_SIZE_MB=64
@@ -159,7 +161,7 @@ qemu-system-x86_64 \
     -bios /usr/share/OVMF/OVMF_CODE.fd \
     -drive file="$DISK_IMG",format=raw,media=disk \
     -net none \
-    -m 4096M \
+    -m $RAM_SIZE_MB \
     -machine q35 \
     -monitor stdio \
     -serial file:"$BUILD_DIR/serial.log" \
