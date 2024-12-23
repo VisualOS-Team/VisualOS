@@ -101,76 +101,89 @@ EFI_STATUS configure_memory(EFI_MEMORY_DESCRIPTOR **MemoryMap, UINTN *MemoryMapS
 
 EFI_STATUS reacquire_memory_map_and_exit_boot_services(
     EFI_HANDLE ImageHandle,
-    UINTN *MemoryMapSize,
     EFI_MEMORY_DESCRIPTOR **MemoryMap,
+    UINTN *MemoryMapSize,
     UINTN *MapKey,
     UINTN *DescriptorSize,
     UINT32 *DescriptorVersion
 ) {
     EFI_STATUS Status;
+    #define STATIC_BUFFER_SIZE (8 * 1024 * 1024) // Increased buffer size for testing
+    static CHAR8 StaticBuffer[STATIC_BUFFER_SIZE] __attribute__((aligned(8)));
+    UINTN RetryCount = 0;
 
-    // Reacquire memory map before exiting boot services
-    Print(L"Reacquiring memory map before exiting boot services...\n");
+    *MemoryMap = (EFI_MEMORY_DESCRIPTOR *)StaticBuffer;
+    *MemoryMapSize = STATIC_BUFFER_SIZE;
 
-    // Allocate initial memory map buffer
-    if (*MemoryMapSize == 0) {
-        *MemoryMapSize = 4096; // Start with a reasonable buffer size (4KB)
-    }
+    Print(L"Debug: Entering reacquire_memory_map_and_exit_boot_services\n");
+    Print(L"StaticBuffer Address: 0x%lx\n", (UINTN)StaticBuffer);
 
-    // Loop until the memory map is successfully retrieved
     do {
-        // Free the current buffer if it was previously allocated
-        if (*MemoryMap != NULL) {
-            gBS->FreePool(*MemoryMap);
-        }
+        // Reset MemoryMap
+        *MemoryMap = (EFI_MEMORY_DESCRIPTOR *)StaticBuffer;
 
-        // Allocate memory for the memory map
-        Status = uefi_call_wrapper(gBS->AllocatePool, 3, EfiLoaderData, *MemoryMapSize, (VOID **)MemoryMap);
-        if (EFI_ERROR(Status)) {
-            Print(L"Failed to allocate memory for memory map: %r\n", Status);
-            return Status;
-        }
+        Print(L"MemoryMap Address: 0x%lx, MemoryMapSize: %lu, DescriptorSize: %lu\n",
+              (UINTN)*MemoryMap, *MemoryMapSize, *DescriptorSize);
 
-        // Retrieve the memory map
-        Status = uefi_call_wrapper(gBS->GetMemoryMap, 5, MemoryMapSize, *MemoryMap, MapKey, DescriptorSize, DescriptorVersion);
+        Status = gBS->GetMemoryMap(MemoryMapSize, *MemoryMap, MapKey, DescriptorSize, DescriptorVersion);
 
-        // If the buffer is too small, increase the size
         if (Status == EFI_BUFFER_TOO_SMALL) {
-            *MemoryMapSize += 4096; // Increment the buffer size
+            Print(L"Buffer Too Small. Adjusting size: %lu bytes\n", *MemoryMapSize);
+
+            if (*MemoryMapSize > STATIC_BUFFER_SIZE) {
+                Print(L"Error: MemoryMapSize exceeds static buffer size.\n");
+                while (1) { __asm__("hlt"); }
+            }
+
+            if (*DescriptorSize != sizeof(EFI_MEMORY_DESCRIPTOR)) {
+                Print(L"Warning: Forcing DescriptorSize to %lu.\n", sizeof(EFI_MEMORY_DESCRIPTOR));
+                *DescriptorSize = sizeof(EFI_MEMORY_DESCRIPTOR);
+            }
+        } else if (EFI_ERROR(Status)) {
+            Print(L"Error: GetMemoryMap failed with status: %r\n", Status);
+            break;
+        } else {
+            Print(L"GetMemoryMap succeeded.\n");
+            break;
         }
 
-    } while (Status == EFI_BUFFER_TOO_SMALL);
+        RetryCount++;
+    } while (RetryCount < 3);
 
-    if (EFI_ERROR(Status)) {
-        Print(L"Failed to retrieve memory map: %r\n", Status);
-        gBS->FreePool(*MemoryMap);
-        return Status;
+    // Validate MemoryMap
+    if (*MemoryMapSize < *DescriptorSize) {
+        Print(L"Error: MemoryMapSize (%lu) is smaller than DescriptorSize (%lu).\n",
+              *MemoryMapSize, *DescriptorSize);
+        while (1) { __asm__("hlt"); }
     }
 
-    // Print debug information about the memory map
-    Print(L"MemoryMapSize: %lu, MapKey: 0x%lx, DescriptorSize: %lu\n", *MemoryMapSize, *MapKey, *DescriptorSize);
+    // Parse Descriptors
+    EFI_MEMORY_DESCRIPTOR *Descriptor = *MemoryMap;
+    for (UINTN i = 0; i < (*MemoryMapSize / *DescriptorSize); i++) {
+        Print(L"Descriptor %u: Type: %u, PhysicalStart: 0x%lx, NumberOfPages: %lu\n",
+              i, Descriptor->Type, Descriptor->PhysicalStart, Descriptor->NumberOfPages);
 
-    // Exit boot services
-    Print(L"Exiting boot services...\n");
-    Status = uefi_call_wrapper(gBS->ExitBootServices, 2, ImageHandle, *MapKey);
+        // Ensure descriptors are aligned
+        if ((Descriptor->PhysicalStart % EFI_PAGE_SIZE) != 0) {
+            Print(L"Error: Descriptor %u PhysicalStart is not page-aligned.\n", i);
+            while (1) { __asm__("hlt"); }
+        }
 
-    // If ExitBootServices fails, print debug information
-    if (EFI_ERROR(Status)) {
-        Print(L"Failed to exit boot services: %r\n", Status);
-        Print(L"MapKey: 0x%lx, MemoryMapSize: %lu, DescriptorSize: %lu\n", *MapKey, *MemoryMapSize, *DescriptorSize);
-
-        // Free the memory map buffer if allocated
-        gBS->FreePool(*MemoryMap);
-        return Status;
+        Descriptor = (EFI_MEMORY_DESCRIPTOR *)((CHAR8 *)Descriptor + *DescriptorSize);
     }
 
-    // Free the memory map buffer, as it is no longer needed
-    gBS->FreePool(*MemoryMap);
+    // Exit Boot Services
+    Print(L"Exiting Boot Services...\n");
+    Status = gBS->ExitBootServices(ImageHandle, *MapKey);
 
+    if (EFI_ERROR(Status)) {
+        Print(L"Error: ExitBootServices failed. MapKey: %lu, Status: %r\n", *MapKey, Status);
+        while (1) { __asm__("hlt"); }
+    }
+
+    Print(L"Exited Boot Services successfully.\n");
     return EFI_SUCCESS;
 }
-
-
 
 // Function to load and prepare the kernel
 EFI_STATUS load_kernel(EFI_FILE_PROTOCOL *Root, EFI_PHYSICAL_ADDRESS *KernelAddress) {
