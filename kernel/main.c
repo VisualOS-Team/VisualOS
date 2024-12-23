@@ -62,14 +62,26 @@ void terminal_write(const char *str) {
 }
 
 // Kernel main function
-void main() {
+void kernel_main() {
     terminal_initialize();
-    terminal_write("Kernel main started. Debugging output enabled.\n");
+    terminal_write("Hello, World!\n");
 
     while (1) {
-        terminal_write("Running kernel...\n");
-        for (volatile int i = 0; i < 10000000; i++) {
-            // Delay loop to prevent spamming
-        }
+        __asm__("hlt");
     }
+}
+
+// Entry point for the kernel
+void _start() {
+    // Ensure the stack is set up correctly
+    __asm__ volatile (
+        "mov $0x90000, %esp\n"  // Set stack pointer to a known good value
+        "xor %ebp, %ebp\n"      // Zero out the base pointer
+    );
+
+    // Call the kernel main function
+    kernel_main();
+
+    // This should not be reached
+    __asm__ volatile ("hlt");
 }

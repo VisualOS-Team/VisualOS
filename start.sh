@@ -17,7 +17,10 @@ HEADS=64
 CYLINDERS=$((DISK_SIZE_MB * 1024 * 1024 / (SECTORS_PER_TRACK * HEADS * 512)))
 EFI_LDS="$GNUEFI_PATH/gnuefi/elf_x86_64_efi.lds"
 EFI_CRT_OBJ="$GNUEFI_PATH/gnuefi/crt0-efi-x86_64.o"
+TRACE_OUTPUT="$BUILD_DIR/cpu_trace.log"
 KERNEL_DIR="kernel"
+BOOTLOADER_DIR="bootloader"
+LINKER_SCRIPT="linker.ld"
 
 # Cleanup function
 cleanup() {
@@ -30,30 +33,38 @@ cleanup
 # Create build directory
 mkdir -p "$BUILD_DIR"
 
-# Compile the UEFI bootloader
-echo "Compiling the UEFI bootloader..."
+# Compile the UEFI bootloader (main.c)
+echo "Compiling the UEFI bootloader (main.c)..."
 gcc \
     -I"$GNUEFI_PATH/lib" \
     -I"$GNUEFI_PATH/gnuefi" \
     -I/usr/include/efi \
     -fpic -ffreestanding -fno-stack-protector -fno-stack-check -fshort-wchar \
     -mno-red-zone -maccumulate-outgoing-args \
-    -c bootloader.c -o "$BUILD_DIR/bootloader.o"
+    -c "bootloader.c" -o "$BUILD_DIR/main.o"
 
 if [ $? -ne 0 ]; then
-    echo "Error: Failed to compile the UEFI bootloader"
+    echo "Error: Failed to compile the UEFI bootloader (main.c)"
     exit 1
 fi
 
-# Link the bootloader
-echo "Linking the UEFI bootloader..."
+# Link the bootloader and loader together
+echo "Linking the UEFI bootloader and loader..."
 ld \
-    -nostdlib -znocombreloc -T "$EFI_LDS" -shared -Bsymbolic \
-    -L"$GNUEFI_PATH/gnuefi" -L"$GNUEFI_PATH/lib" \
-    "$EFI_CRT_OBJ" "$BUILD_DIR/bootloader.o" -o "$BUILD_DIR/BOOTX64.so" -lefi -lgnuefi
+    -nostdlib \
+    -znocombreloc \
+    -T "$EFI_LDS" \
+    -shared \
+    -Bsymbolic \
+    -L"$GNUEFI_PATH/gnuefi" \
+    -L"$GNUEFI_PATH/lib" \
+    "$EFI_CRT_OBJ" \
+    "$BUILD_DIR/main.o" \
+    -o "$BUILD_DIR/BOOTX64.so" \
+    -lefi -lgnuefi
 
 if [ $? -ne 0 ]; then
-    echo "Error: Failed to link the UEFI bootloader"
+    echo "Error: Failed to link the UEFI bootloader and loader"
     exit 1
 fi
 
@@ -73,14 +84,14 @@ fi
 echo "Building kernel..."
 KERNEL_OBJECTS=""
 
-# Compile main.c first
+# Compile main.c in the kernel directory
 if [ -f "$KERNEL_DIR/main.c" ]; then
-    gcc -ffreestanding -c "$KERNEL_DIR/main.c" -o "$BUILD_DIR/main.o"
+    gcc -ffreestanding -c "$KERNEL_DIR/main.c" -o "$BUILD_DIR/main_kernel.o"
     if [ $? -ne 0 ]; then
-        echo "Error: Failed to compile main.c"
+        echo "Error: Failed to compile kernel main.c"
         exit 1
     fi
-    KERNEL_OBJECTS="$BUILD_DIR/main.o"
+    KERNEL_OBJECTS="$BUILD_DIR/main_kernel.o"
 else
     echo "Error: main.c not found in $KERNEL_DIR"
     exit 1
@@ -101,7 +112,12 @@ for file in "$KERNEL_DIR"/*.c; do
 done
 
 # Link kernel object files into a single binary
-ld -Ttext 0x100000 --oformat binary -nostdlib $KERNEL_OBJECTS -o "$BUILD_DIR/kernel.bin"
+if [ ! -f "$LINKER_SCRIPT" ]; then
+    echo "Error: Linker script ($LINKER_SCRIPT) not found."
+    exit 1
+fi
+
+ld -T "$LINKER_SCRIPT" -o "$BUILD_DIR/kernel.bin" --oformat binary $KERNEL_OBJECTS
 if [ $? -ne 0 ]; then
     echo "Error: Failed to link kernel"
     exit 1
@@ -148,7 +164,14 @@ qemu-system-x86_64 \
     -monitor stdio \
     -serial file:"$BUILD_DIR/serial.log" \
     -debugcon file:"$BUILD_DIR/debug.log" \
-    -display gtk
+    -display gtk \
+    -d int,cpu_reset,guest_errors \
+    -D "$TRACE_OUTPUT"
+
+if [ $? -ne 0 ]; then
+    echo "Error: QEMU execution failed"
+    exit 1
+fi
 
 echo "Done!"
 
