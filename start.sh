@@ -1,180 +1,176 @@
 #!/bin/bash
+set -euo pipefail
 
-# Check if GNUEFI_PATH is provided as an argument
-if [ -z "$1" ]; then
-    echo "Usage: ./start.sh <GNUEFI_PATH>"
-    exit 1
-fi
+GNUEFI_PATH="${1:?Usage: $0 <GNUEFI_PATH>}"
+[[ -d "$GNUEFI_PATH" ]] || { echo "Error: GNUEFI_PATH not found"; exit 1; }
 
-GNUEFI_PATH="$1"
+readonly BUILD_DIR="build"
+readonly CACHE_DIR="${BUILD_DIR}/cache"
+readonly DISK_IMG="${BUILD_DIR}/boot.img"
+readonly DISK_SIZE_MB=256
+readonly RAM_SIZE_MB=4096
+readonly KERNEL_DIR="kernel"
+readonly BOOTLOADER_DIR="bootloader"
+readonly EFI_LDS="${GNUEFI_PATH}/gnuefi/elf_x86_64_efi.lds"
+readonly EFI_CRT_OBJ="${GNUEFI_PATH}/gnuefi/crt0-efi-x86_64.o"
+readonly -a QEMU_PATHS=("/usr/share/OVMF/OVMF_CODE.fd" "/usr/share/qemu/OVMF.fd" "/usr/share/ovmf/OVMF.fd")
 
-# Constants
+readonly CC="gcc"
+readonly LD="ld"
+readonly AS="nasm"
+readonly OBJCOPY="objcopy"
 
-RAM_SIZE_MB=4096
-BUILD_DIR="build"
-DISK_IMG="$BUILD_DIR/boot.img"
-DISK_SIZE_MB=256
-SECTORS_PER_TRACK=32
-HEADS=64
-CYLINDERS=$((DISK_SIZE_MB * 1024 * 1024 / (SECTORS_PER_TRACK * HEADS * 512)))
-EFI_LDS="$GNUEFI_PATH/gnuefi/elf_x86_64_efi.lds"
-EFI_CRT_OBJ="$GNUEFI_PATH/gnuefi/crt0-efi-x86_64.o"
-TRACE_OUTPUT="$BUILD_DIR/cpu_trace.log"
-KERNEL_DIR="kernel"
-BOOTLOADER_DIR="bootloader"
-LINKER_SCRIPT="linker.ld"
+readonly BOOTLOADER_CFLAGS="-I${GNUEFI_PATH}/lib -I${GNUEFI_PATH}/gnuefi -I/usr/include/efi -I${BOOTLOADER_DIR}/include \
+    -fpic -ffreestanding -fno-stack-protector -fno-stack-check -fshort-wchar \
+    -mno-red-zone -maccumulate-outgoing-args -O2 -Wall -Wextra"
 
-# Cleanup function
-cleanup() {
-    echo "Cleaning up build files..."
-    rm -rf "$BUILD_DIR"
+readonly KERNEL_CFLAGS="-m64 -mno-red-zone -ffreestanding -fno-stack-protector \
+    -nostdlib -fno-builtin -fno-exceptions -fno-asynchronous-unwind-tables \
+    -mno-mmx -mno-sse -mno-sse2 -O2 -Wall -Wextra -I${KERNEL_DIR}/include"
+
+readonly KERNEL_LDFLAGS="-m elf_x86_64 -T linker.ld --oformat binary"
+
+find_ovmf() {
+    for path in "${QEMU_PATHS[@]}"; do
+        [[ -f "$path" ]] && { echo "$path"; return 0; }
+    done
+    echo "Error: OVMF.fd not found in standard locations" >&2
+    return 1
 }
 
-cleanup
+create_directories() {
+    mkdir -p "${BUILD_DIR}" "${CACHE_DIR}"
+}
 
-# Create build directory
-mkdir -p "$BUILD_DIR"
+compute_hash() {
+    find "$1" -type f -exec sha256sum {} + | sha256sum | cut -d' ' -f1
+}
 
-# Compile the UEFI bootloader (main.c)
-echo "Compiling the UEFI bootloader (main.c)..."
-gcc \
-    -I"$GNUEFI_PATH/lib" \
-    -I"$GNUEFI_PATH/gnuefi" \
-    -I/usr/include/efi \
-    -fpic -ffreestanding -fno-stack-protector -fno-stack-check -fshort-wchar \
-    -mno-red-zone -maccumulate-outgoing-args \
-    -c "bootloader.c" -o "$BUILD_DIR/main.o"
+needs_rebuild() {
+    local target="$1"
+    local source_dir="$2"
+    local hash_file="${CACHE_DIR}/$(basename "$target").hash"
+    
+    [[ ! -f "$target" ]] && return 0
+    [[ ! -f "$hash_file" ]] && return 0
+    
+    local current_hash=$(compute_hash "$source_dir")
+    local stored_hash=$(cat "$hash_file" 2>/dev/null || echo "")
+    
+    [[ "$current_hash" != "$stored_hash" ]]
+}
 
-if [ $? -ne 0 ]; then
-    echo "Error: Failed to compile the UEFI bootloader (main.c)"
-    exit 1
-fi
+save_hash() {
+    local target="$1"
+    local source_dir="$2"
+    local hash_file="${CACHE_DIR}/$(basename "$target").hash"
+    
+    compute_hash "$source_dir" > "$hash_file"
+}
 
-# Link the bootloader and loader together
-echo "Linking the UEFI bootloader and loader..."
-ld \
-    -nostdlib \
-    -znocombreloc \
-    -T "$EFI_LDS" \
-    -shared \
-    -Bsymbolic \
-    -L"$GNUEFI_PATH/gnuefi" \
-    -L"$GNUEFI_PATH/lib" \
-    "$EFI_CRT_OBJ" \
-    "$BUILD_DIR/main.o" \
-    -o "$BUILD_DIR/BOOTX64.so" \
-    -lefi -lgnuefi
-
-if [ $? -ne 0 ]; then
-    echo "Error: Failed to link the UEFI bootloader and loader"
-    exit 1
-fi
-
-# Convert the bootloader to EFI format
-echo "Converting the UEFI bootloader to EFI format..."
-objcopy \
-    -j .text -j .sdata -j .data -j .rodata -j .dynamic -j .dynsym \
-    -j .rel -j .rela -j .rel.* -j .rela.* -j .reloc \
-    --target=efi-app-x86_64 --subsystem=10 "$BUILD_DIR/BOOTX64.so" "$BUILD_DIR/BOOTX64.efi"
-
-if [ $? -ne 0 ]; then
-    echo "Error: Failed to convert the UEFI bootloader to EFI format"
-    exit 1
-fi
-
-# Compile all kernel source files
-echo "Building kernel..."
-KERNEL_OBJECTS=""
-
-# Compile main.c in the kernel directory
-if [ -f "$KERNEL_DIR/main.c" ]; then
-    gcc -ffreestanding -c "$KERNEL_DIR/main.c" -o "$BUILD_DIR/main_kernel.o"
-    if [ $? -ne 0 ]; then
-        echo "Error: Failed to compile kernel main.c"
-        exit 1
+build_bootloader() {
+    local target="${BUILD_DIR}/BOOTX64.efi"
+    
+    if ! needs_rebuild "$target" "$BOOTLOADER_DIR"; then
+        echo "Bootloader up to date"
+        return 0
     fi
-    KERNEL_OBJECTS="$BUILD_DIR/main_kernel.o"
-else
-    echo "Error: main.c not found in $KERNEL_DIR"
-    exit 1
-fi
+    
+    echo "Building bootloader..."
+    
+    "$CC" $BOOTLOADER_CFLAGS -c "${BOOTLOADER_DIR}/src/bootloader.c" \
+        -o "${BUILD_DIR}/bootloader.o"
+    
+    "$LD" -nostdlib -znocombreloc -T "$EFI_LDS" -shared -Bsymbolic \
+        -L"${GNUEFI_PATH}/gnuefi" -L"${GNUEFI_PATH}/lib" \
+        "$EFI_CRT_OBJ" "${BUILD_DIR}/bootloader.o" \
+        -o "${BUILD_DIR}/BOOTX64.so" -lefi -lgnuefi
+    
+    "$OBJCOPY" -j .text -j .sdata -j .data -j .rodata -j .dynamic -j .dynsym \
+        -j .rel -j .rela -j .rel.* -j .rela.* -j .reloc \
+        --target=efi-app-x86_64 --subsystem=10 \
+        "${BUILD_DIR}/BOOTX64.so" "$target"
+    
+    save_hash "$target" "$BOOTLOADER_DIR"
+}
 
-# Compile the rest of the kernel files
-for file in "$KERNEL_DIR"/*.c; do
-    if [[ "$file" == "$KERNEL_DIR/main.c" ]]; then
-        continue
+build_kernel() {
+    local target="${BUILD_DIR}/kernel.bin"
+    
+    if ! needs_rebuild "$target" "$KERNEL_DIR"; then
+        echo "Kernel up to date"
+        return 0
     fi
-    obj="$BUILD_DIR/$(basename "$file" .c).o"
-    gcc -ffreestanding -c "$file" -o "$obj"
-    if [ $? -ne 0 ]; then
-        echo "Error: Failed to compile $file"
-        exit 1
-    fi
-    KERNEL_OBJECTS="$KERNEL_OBJECTS $obj"
-done
+    
+    echo "Building kernel..."
+    
+    "$AS" -f elf64 "${KERNEL_DIR}/src/kernel_entry.asm" \
+        -o "${BUILD_DIR}/kernel_entry.o"
+    
+    local objects=("${BUILD_DIR}/kernel_entry.o")
+    
+    for src in "${KERNEL_DIR}/src"/*.c; do
+        [[ -f "$src" ]] || continue
+        local obj="${BUILD_DIR}/$(basename "${src%.c}.o")"
+        "$CC" $KERNEL_CFLAGS -c "$src" -o "$obj"
+        objects+=("$obj")
+    done
+    
+    "$LD" $KERNEL_LDFLAGS -o "$target" "${objects[@]}"
+    
+    save_hash "$target" "$KERNEL_DIR"
+}
 
-# Link kernel object files into a single binary
-if [ ! -f "$LINKER_SCRIPT" ]; then
-    echo "Error: Linker script ($LINKER_SCRIPT) not found."
-    exit 1
-fi
+create_disk_image() {
+    local bootloader="${BUILD_DIR}/BOOTX64.efi"
+    local kernel="${BUILD_DIR}/kernel.bin"
+    
+    [[ -f "$bootloader" ]] || { echo "Error: Bootloader not found"; return 1; }
+    [[ -f "$kernel" ]] || { echo "Error: Kernel not found"; return 1; }
+    
+    echo "Creating disk image..."
+    
+    dd if=/dev/zero of="$DISK_IMG" bs=1M count=$DISK_SIZE_MB status=none
+    
+    local sectors_per_track=32
+    local heads=64
+    local cylinders=$((DISK_SIZE_MB * 1024 * 1024 / (sectors_per_track * heads * 512)))
+    
+    mformat -i "$DISK_IMG" -h "$heads" -t "$cylinders" -s "$sectors_per_track" ::
+    
+    mmd -i "$DISK_IMG" ::/EFI ::/EFI/BOOT
+    mcopy -i "$DISK_IMG" "$bootloader" ::/EFI/BOOT/
+    mcopy -i "$DISK_IMG" "$kernel" ::/EFI/BOOT/
+}
 
-ld -T "$LINKER_SCRIPT" -o "$BUILD_DIR/kernel.bin" --oformat binary $KERNEL_OBJECTS
-if [ $? -ne 0 ]; then
-    echo "Error: Failed to link kernel"
-    exit 1
-fi
+launch_qemu() {
+    local ovmf_path=$(find_ovmf)
+    
+    echo "Launching QEMU..."
+    
+    qemu-system-x86_64 \
+        -bios "$ovmf_path" \
+        -drive file="$DISK_IMG",format=raw,if=ide \
+        -m $RAM_SIZE_MB \
+        -machine q35,accel=kvm:tcg \
+        -cpu qemu64,+nx \
+        -display gtk \
+        -monitor stdio \
+        -serial file:"${BUILD_DIR}/serial.log" \
+        -debugcon file:"${BUILD_DIR}/debug.log" \
+        -d guest_errors \
+        -no-reboot \
+        -no-shutdown
+}
 
-# Create the disk image
-echo "Creating the disk image..."
-dd if=/dev/zero of="$DISK_IMG" bs=1M count=$DISK_SIZE_MB status=progress
+main() {
+    trap 'echo "Build failed at line $LINENO"' ERR
+    
+    create_directories
+    build_bootloader
+    build_kernel
+    create_disk_image
+    launch_qemu
+}
 
-if [ $? -ne 0 ]; then
-    echo "Error: Failed to create the disk image"
-    exit 1
-fi
-
-# Format the disk image as FAT32 using mtools
-echo "Formatting disk image with FAT32 file system..."
-mformat -i "$DISK_IMG" -h "$HEADS" -t "$CYLINDERS" -s "$SECTORS_PER_TRACK" ::
-
-if [ $? -ne 0 ]; then
-    echo "Error: Failed to format disk image with FAT32"
-    exit 1
-fi
-
-# Add boot files to the disk image
-echo "Adding bootloader and kernel to disk image..."
-mmd -i "$DISK_IMG" ::/EFI
-mmd -i "$DISK_IMG" ::/EFI/BOOT
-mcopy -i "$DISK_IMG" "$BUILD_DIR/BOOTX64.efi" ::/EFI/BOOT/
-mcopy -i "$DISK_IMG" "$BUILD_DIR/kernel.bin" ::/EFI/BOOT/
-
-if [ $? -ne 0 ]; then
-    echo "Error: Failed to copy files to disk image"
-    exit 1
-fi
-
-# Run the disk image
-echo "Starting QEMU..."
-qemu-system-x86_64 \
-    -bios /usr/share/OVMF/OVMF_CODE.fd \
-    -drive file="$DISK_IMG",format=raw,media=disk \
-    -net none \
-    -m $RAM_SIZE_MB \
-    -machine q35 \
-    -monitor stdio \
-    -serial file:"$BUILD_DIR/serial.log" \
-    -debugcon file:"$BUILD_DIR/debug.log" \
-    -display gtk \
-    -d int,cpu_reset,guest_errors \
-    -D "$TRACE_OUTPUT"
-
-if [ $? -ne 0 ]; then
-    echo "Error: QEMU execution failed"
-    exit 1
-fi
-
-echo "Done!"
-
-cleanup
+main "$@"
